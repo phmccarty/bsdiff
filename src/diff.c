@@ -76,53 +76,65 @@ static int bsdiff_fulldl;
 #undef MIN
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 
-/* NOTES:
- * I and V are chunks of memory (arrays) with length = (oldfile size +1) * sizeof(int64_t).
- * Additionally, we pass in arraylen now. The parent function qsufsort receives it, so it
- * should be available here as well for error checking.
- * start: is actually the point in the array sent in during the suffix sort, which sorts by
- * small blocks/chunks.
- * len: refers to the length of the current chunk being processed - NOT the array length(s).
- * h: will never be more than 8, and increases by *2 during suffix sort (h += h) */
-static void split(int64_t *I, int64_t *V, int64_t arraylen, int64_t start, int64_t len,
-		  int64_t h)
+/*
+ * NOTE:
+ * The quick suffix sort implementation (qsufsort) with ternary-split (split)
+ * is derived from the following paper and its references, referred to
+ * elsewhere in this file as "LS99":
+ *
+ * Larsson, N. Jesper, and Kunihiko Sadakane. Faster suffix sorting. Univ., 1999.
+ */
+
+/*
+ * Performs a "ternary split" for the suffix sort implementation, as described in LS99.
+ *
+ * PARAMETERS:
+ * suffixes: an array of indices to suffixes in oldfile, modified in place for sorting.
+ * groups: an array of indices to groups from SUFFIXES, used for sorting optimization.
+ * arraylen: The length of SUFFIXES and GROUPS arrays.
+ * start: The index in SUFFIXES to begin the split.
+ * len: The length of the current chunk being processed -- NOT the array length(s).
+ * order: The h-order for suffix sort (i.e. the number of symbols to consider for sorting)
+ */
+static void split(int64_t *suffixes, int64_t *groups, int64_t arraylen, int64_t start, int64_t len,
+		  int64_t order)
 {
 	int64_t i, j, k, x, tmp, jj, kk;
 
 	if (len < 16) {
 		for (k = start; k < start + len; k += j) {
 			j = 1;
-			x = V[I[k] + h];
+			x = groups[suffixes[k] + order];
 			for (i = 1; k + i < start + len; i++) {
-				if (V[I[k + i] + h] < x) {
-					x = V[I[k + i] + h];
+				if (groups[suffixes[k + i] + order] < x) {
+					x = groups[suffixes[k + i] + order];
 					j = 0;
 				}
-				if (V[I[k + i] + h] == x) {
-					tmp = I[k + j];
-					I[k + j] = I[k + i];
-					I[k + i] = tmp;
+				if (groups[suffixes[k + i] + order] == x) {
+					tmp = suffixes[k + j];
+					suffixes[k + j] = suffixes[k + i];
+					suffixes[k + i] = tmp;
 					j++;
 				}
 			}
 			for (i = 0; i < j; i++) {
-				V[I[k + i]] = k + j - 1;
+				groups[suffixes[k + i]] = k + j - 1;
 			}
 			if (j == 1) {
-				I[k] = -1;
+				suffixes[k] = -1;
 			}
 		}
 		return;
 	}
 
-	x = V[I[start + len / 2] + h];
+	x = groups[suffixes[start + len / 2] + order];
 	jj = 0;
 	kk = 0;
 	for (i = start; i < start + len; i++) {
-		if (V[I[i] + h] < x) {
+		if (groups[suffixes[i] + order] < x) {
 			jj++;
 		}
-		if (V[I[i] + h] == x) {
+		if (groups[suffixes[i] + order] == x) {
 			kk++;
 		}
 	}
@@ -133,54 +145,66 @@ static void split(int64_t *I, int64_t *V, int64_t arraylen, int64_t start, int64
 	j = 0;
 	k = 0;
 	while (i < jj) {
-		if (V[I[i] + h] < x) {
+		if (groups[suffixes[i] + order] < x) {
 			i++;
-		} else if (V[I[i] + h] == x) {
-			tmp = I[i];
-			I[i] = I[jj + j];
-			I[jj + j] = tmp;
+		} else if (groups[suffixes[i] + order] == x) {
+			tmp = suffixes[i];
+			suffixes[i] = suffixes[jj + j];
+			suffixes[jj + j] = tmp;
 			j++;
 		} else {
-			tmp = I[i];
-			I[i] = I[kk + k];
-			I[kk + k] = tmp;
+			tmp = suffixes[i];
+			suffixes[i] = suffixes[kk + k];
+			suffixes[kk + k] = tmp;
 			k++;
 		}
 	}
 
 	while (jj + j < kk) {
-		if (V[I[jj + j] + h] == x) {
+		if (groups[suffixes[jj + j] + order] == x) {
 			j++;
 		} else {
-			tmp = I[jj + j];
-			I[jj + j] = I[kk + k];
-			I[kk + k] = tmp;
+			tmp = suffixes[jj + j];
+			suffixes[jj + j] = suffixes[kk + k];
+			suffixes[kk + k] = tmp;
 			k++;
 		}
 	}
 
 	if (jj > start) {
-		split(I, V, arraylen, start, jj - start, h);
+		split(suffixes, groups, arraylen, start, jj - start, order);
 	}
 
 	for (i = 0; i < kk - jj; i++) {
-		V[I[jj + i]] = kk - 1;
+		groups[suffixes[jj + i]] = kk - 1;
 	}
 	if (jj == kk - 1) {
-		I[jj] = -1;
+		suffixes[jj] = -1;
 	}
 
 	if (start + len > kk) {
-		split(I, V, arraylen, kk, start + len - kk, h);
+		split(suffixes, groups, arraylen, kk, start + len - kk, order);
 	}
 }
 
-/* The old_data (previous file data) is passed into this suffix sort and sorted
- * accordingly using the I and V arrays, which are both of length oldsize +1. */
-static int qsufsort(int64_t *I, int64_t *V, u_char *old, int64_t oldsize)
+/*
+ * The old_data (previous file data) is passed into this suffix sort and sorted
+ * accordingly using the SUFFIXES and GROUPS arrays, which are both of length
+ * oldsize +1.
+ *
+ * PARAMETERS:
+ *
+ * suffixes: an array of indices to suffixes in oldfile, modified in place for sorting.
+ * groups: an array of indices to groups from SUFFIXES, used for sorting optimization.
+ * old: and array of bytes containing previous file data.
+ * oldsize: the size of OLD.
+ */
+static int qsufsort(int64_t *suffixes, int64_t *groups, u_char *old, int64_t oldsize)
 {
 	int64_t buckets[QSUF_BUCKET_SIZE];
-	int64_t i, h, len;
+	int64_t i, len;
+	// In LS99, this value is referred to as "h-order". Use "order" for simplicity.
+	int64_t order;
 
 	for (i = 0; i < QSUF_BUCKET_SIZE; i++) {
 		buckets[i] = 0;
@@ -200,50 +224,53 @@ static int qsufsort(int64_t *I, int64_t *V, u_char *old, int64_t oldsize)
 		if (buckets[old[i]] > oldsize + 1) {
 			return -1;
 		}
-		I[++buckets[old[i]]] = i;
+		buckets[old[i]]++;
+		suffixes[buckets[old[i]]] = i;
 	}
 
 	for (i = 0; i < oldsize; i++) {
-		V[i] = buckets[old[i]];
+		groups[i] = buckets[old[i]];
 	}
-	V[oldsize] = 0;
+	groups[oldsize] = 0;
 	for (i = 1; i < QSUF_BUCKET_SIZE; i++) {
 		if (buckets[i] == buckets[i - 1] + 1) {
-			I[buckets[i]] = -1;
+			suffixes[buckets[i]] = -1;
 		}
 	}
-	I[0] = -1;
+	suffixes[0] = -1;
 
-	for (h = 1; I[0] != -(oldsize + 1); h += h) {
+	for (order = 1; suffixes[0] != -(oldsize + 1); order += order) {
 		len = 0;
 		for (i = 0; i < oldsize + 1;) {
-			if (I[i] < 0) {
-				len -= I[i];
-				i -= I[i];
+			if (suffixes[i] < 0) {
+				len -= suffixes[i];
+				i -= suffixes[i];
 			} else {
 				if (len) {
-					I[i - len] = -len;
+					suffixes[i - len] = -len;
 				}
-				len = V[I[i]] + 1 - i;
-				split(I, V, oldsize, i, len, h);
+				len = groups[suffixes[i]] + 1 - i;
+				split(suffixes, groups, oldsize, i, len, order);
 				i += len;
 				len = 0;
 			}
 		}
 		if (len) {
-			I[i - len] = -len;
+			suffixes[i - len] = -len;
 		}
 	}
 
 	for (i = 0; i < oldsize + 1; i++) {
-		I[V[i]] = i;
+		suffixes[groups[i]] = i;
 	}
 
 	return 0;
 }
 
-static int64_t matchlen(u_char *old, int64_t oldsize, u_char *new,
-			int64_t newsize)
+/* Returns the length of a content match between OLD (max length OLDSIZE) and
+ * NEW (max length NEWSIZE).
+ */
+static int64_t matchlen(u_char *old, int64_t oldsize, u_char *new, int64_t newsize)
 {
 	int64_t i;
 
@@ -256,30 +283,34 @@ static int64_t matchlen(u_char *old, int64_t oldsize, u_char *new,
 	return i;
 }
 
-static int64_t search(int64_t *I, u_char *old, int64_t oldsize,
-		      u_char *new, int64_t newsize, int64_t st, int64_t en,
+/* Searches the array SUFFIXES from START to END for a match between NEW and OLD.
+ * Returns the length of the longest match. Also updates POS to the start of
+ * the longest match.
+ */
+static int64_t search(int64_t *suffixes, u_char *old, int64_t oldsize,
+		      u_char *new, int64_t newsize, int64_t start, int64_t end,
 		      int64_t *pos)
 {
 	int64_t x, y;
 
-	if (en - st < 2) {
-		x = matchlen(old + I[st], oldsize - I[st], new, newsize);
-		y = matchlen(old + I[en], oldsize - I[en], new, newsize);
+	if (end - start < 2) {
+		x = matchlen(old + suffixes[start], oldsize - suffixes[start], new, newsize);
+		y = matchlen(old + suffixes[end], oldsize - suffixes[end], new, newsize);
 
 		if (x > y) {
-			*pos = I[st];
+			*pos = suffixes[start];
 			return x;
 		} else {
-			*pos = I[en];
+			*pos = suffixes[end];
 			return y;
 		}
 	}
 
-	x = st + (en - st) / 2;
-	if (memcmp(old + I[x], new, MIN(oldsize - I[x], newsize)) < 0) {
-		return search(I, old, oldsize, new, newsize, x, en, pos);
+	x = start + (end - start) / 2;
+	if (memcmp(old + suffixes[x], new, MIN(oldsize - suffixes[x], newsize)) < 0) {
+		return search(suffixes, old, oldsize, new, newsize, x, end, pos);
 	} else {
-		return search(I, old, oldsize, new, newsize, st, x, pos);
+		return search(suffixes, old, oldsize, new, newsize, start, x, pos);
 	}
 }
 
@@ -525,7 +556,7 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 	int fd, efd;
 	u_char *old_data, *new_data;
 	int64_t oldsize, newsize;
-	int64_t *I, *V;
+	int64_t *suffixes, *groups;
 	int64_t scan;
 	int64_t pos = 0;
 	int64_t len;
@@ -622,34 +653,34 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 	/* These arrays are size + 1 because suffix sort needs space for the
 	 * data + 1 sentinel element to actually do the sorting. Not because
 	 * oldsize might be 0. */
-	if ((I = malloc((oldsize + 1) * sizeof(int64_t))) == NULL) {
+	if ((suffixes = malloc((oldsize + 1) * sizeof(int64_t))) == NULL) {
 		munmap(old_data, oldsize);
 		return -1;
 	}
-	if ((V = malloc((oldsize + 1) * sizeof(int64_t))) == NULL) {
+	if ((groups = malloc((oldsize + 1) * sizeof(int64_t))) == NULL) {
 		munmap(old_data, oldsize);
-		free(I);
-		return -1;
-	}
-
-	if (qsufsort(I, V, old_data, oldsize) != 0) {
-		munmap(old_data, oldsize);
-		free(I);
-		free(V);
+		free(suffixes);
 		return -1;
 	}
 
-	free(V);
+	if (qsufsort(suffixes, groups, old_data, oldsize) != 0) {
+		munmap(old_data, oldsize);
+		free(suffixes);
+		free(groups);
+		return -1;
+	}
+
+	free(groups);
 
 	if ((fd = open(new_filename, O_RDONLY, 0)) < 0) {
 		munmap(old_data, oldsize);
-		free(I);
+		free(suffixes);
 		return -1;
 	}
 
 	if (fstat(fd, &new_stat) != 0) {
 		munmap(old_data, oldsize);
-		free(I);
+		free(suffixes);
 		close(fd);
 		return -1;
 	}
@@ -672,14 +703,14 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 		if (efd < 0) {
 			close(fd);
 			munmap(old_data, oldsize);
-			free(I);
+			free(suffixes);
 			return -1;
 		}
 		if ((pf = fdopen(efd, "w")) == NULL) {
 			close(efd);
 			close(fd);
 			munmap(old_data, oldsize);
-			free(I);
+			free(suffixes);
 			return -1;
 		}
 		if (fwrite(&small_header, 8, 1, pf) != 1) {
@@ -687,20 +718,20 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 			close(fd);
 			munmap(old_data, oldsize);
 
-			free(I);
+			free(suffixes);
 			return -1;
 		}
 		fclose(pf);
 		close(fd);
 		munmap(old_data, oldsize);
-		free(I);
+		free(suffixes);
 		return 1;
 	}
 
 	if ((new_data = malloc(newsize)) == NULL) {
 		close(fd);
 		munmap(old_data, oldsize);
-		free(I);
+		free(suffixes);
 		return -1;
 	}
 
@@ -708,13 +739,13 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 		close(fd);
 		munmap(old_data, oldsize);
 		free(new_data);
-		free(I);
+		free(suffixes);
 		return -1;
 	}
 	if (close(fd) == -1) {
 		munmap(old_data, oldsize);
 		free(new_data);
-		free(I);
+		free(suffixes);
 		return -1;
 	}
 
@@ -722,14 +753,14 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 	if ((cb = malloc(newsize + 25)) == NULL) {
 		munmap(old_data, oldsize);
 		free(new_data);
-		free(I);
+		free(suffixes);
 		return -1;
 	}
 	if ((db = malloc(newsize + 25)) == NULL) {
 		munmap(old_data, oldsize);
 		free(new_data);
 		free(cb);
-		free(I);
+		free(suffixes);
 		return -1;
 	}
 	if ((eb = malloc(newsize + 25)) == NULL) {
@@ -737,7 +768,7 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 		free(new_data);
 		free(cb);
 		free(db);
-		free(I);
+		free(suffixes);
 		return -1;
 	}
 	cblen = 0;
@@ -755,7 +786,7 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 
 		for (scsc = scan += len; scan < newsize; scan++) {
 			len =
-			    search(I, old_data, oldsize, new_data + scan, newsize - scan,
+			    search(suffixes, old_data, oldsize, new_data + scan, newsize - scan,
 				   0, oldsize, &pos);
 
 			for (; scsc < scan + len; scsc++) {
@@ -852,7 +883,7 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 				free(cb);
 				free(db);
 				free(eb);
-				free(I);
+				free(suffixes);
 				return -1;
 			}
 
@@ -870,7 +901,7 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 			lastoffset = pos - scan;
 		}
 	}
-	free(I);
+	free(suffixes);
 
 	c_enc = make_small(&cb, &cblen, enc, new_filename, "control");
 	d_enc = make_small(&db, &dblen, enc, new_filename, "diff   ");
