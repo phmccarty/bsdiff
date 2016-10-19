@@ -286,6 +286,16 @@ static int64_t matchlen(u_char *old, int64_t oldsize, u_char *new, int64_t newsi
 /* Searches the array SUFFIXES from START to END for a match between NEW and OLD.
  * Returns the length of the longest match. Also updates POS to the start of
  * the longest match.
+ *
+ * PARAMETERS:
+ * suffixes: the sorted suffix array
+ * old: array of bytes (old data)
+ * oldsize: size of OLD
+ * new: array of bytes (new data)
+ * newsize: size of NEW
+ * start: index of the suffix array for where to start searching
+ * end: index of the suffix array for where to end searching
+ * pos: index of the suffix match in OLD
  */
 static int64_t search(int64_t *suffixes, u_char *old, int64_t oldsize,
 		      u_char *new, int64_t newsize, int64_t start, int64_t end,
