@@ -303,7 +303,8 @@ static int64_t search(int64_t *suffixes, u_char *old, int64_t oldsize,
 {
 	int64_t x, y;
 
-	if (end - start < 2) {
+	// base case: adjacent entries in the sorted suffix array (suffixes[])
+	if (end - start == 1) {
 		x = matchlen(old + suffixes[start], oldsize - suffixes[start], new, newsize);
 		y = matchlen(old + suffixes[end], oldsize - suffixes[end], new, newsize);
 
