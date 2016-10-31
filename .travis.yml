@@ -3,7 +3,12 @@ dist: trusty
 language: c
 
 # Pre-install missing build dependencies:
+# - valgrind (from the repo)
 # - libcheck 0.9.10 is slightly too old, since 0.9.12 adds TAP support
+before_install:
+        - sudo apt-get -qq update
+        - sudo apt-get install -y valgrind
+
 install:
         - wget http://downloads.sourceforge.net/project/check/check/0.10.0/check-0.10.0.tar.gz
         - tar -xvf check-0.10.0.tar.gz
