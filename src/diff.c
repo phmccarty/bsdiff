@@ -582,13 +582,23 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 	lastscan = 0;
 	lastpos = 0;
 	lastoffset = 0;
+
+	uint64_t a = 0;
+	uint64_t b = 0;
+
 	while (scan < newsize) {
 		oldscore = 0;
 
+		a = 0;
+
 		for (scsc = scan += len; scan < newsize; scan++) {
+			a++;
+
 			len =
 			    search(I, old_data, oldsize, new_data + scan, newsize - scan,
 				   0, oldsize, &pos);
+
+			printf("[%lu] candidate match: len %ld; scan %ld; pos %ld\n", a, len, scan, pos);
 
 			for (; scsc < scan + len; scsc++) {
 				if ((scsc + lastoffset < oldsize) &&
@@ -597,8 +607,12 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 				}
 			}
 
-			if (((len == oldscore) && (len != 0)) ||
-			    (len > oldscore + 8)) {
+			if ((len == oldscore) && (len != 0)) {
+				printf("[%lu] match identical to last recorded: len %ld; oldscore %ld\n", a, len, oldscore);
+				break;
+			}
+			if (len > oldscore + 8) {
+				printf("[%lu] recording match: len %ld; oldscore %ld\n", a, len, oldscore);
 				break;
 			}
 
@@ -609,6 +623,9 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 		}
 
 		if ((len != oldscore) || (scan == newsize)) {
+
+			b++;
+
 			s = 0;
 			Sf = 0;
 			lenf = 0;
@@ -623,6 +640,8 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 					lenf = i;
 				}
 			}
+
+			printf("[%lu] lenf: %ld\n", b, lenf);
 
 			lenb = 0;
 			if (scan < newsize) {
@@ -640,6 +659,8 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 					}
 				}
 			}
+
+			printf("[%lu] lenb: %ld\n", b, lenb);
 
 			if (lastscan + lenf > scan - lenb) {
 				overlap = (lastscan + lenf) - (scan - lenb);
@@ -663,7 +684,18 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 
 				lenf += lens - overlap;
 				lenb -= lens;
+
+				printf("[%lu] lens: %ld\n", b, lens);
+				printf("[%lu] lenf adjusted: %ld\n", b, lenf);
+				printf("[%lu] lenb adjusted: %ld\n", b, lenb);
 			}
+
+			printf("[%lu] lastscan: %ld\n", b, lastscan);
+			printf("[%lu] lastpos: %ld\n", b, lastpos);
+
+			printf("[%lu] cblen: %ld\n", b, cblen);
+			printf("[%lu] dblen: %ld\n", b, dblen);
+			printf("[%lu] eblen: %ld\n", b, eblen);
 
 			for (i = 0; i < lenf; i++) {
 				db[dblen + i] =
