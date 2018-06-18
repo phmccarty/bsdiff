@@ -390,6 +390,7 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 	int64_t *I, *V;
 	int64_t scan;
 	int64_t pos = 0;
+	int64_t prevpos, prevlen;
 	int64_t len;
 	int64_t lastscan, lastpos, lastoffset;
 	int64_t oldscore, scsc;
@@ -614,10 +615,24 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 	lastoffset = 0;
 	while (scan < newsize) {
 		oldscore = 0;
+		prevpos = oldsize;
+		prevlen = newsize;
 
 		for (scsc = scan += len; scan < newsize; scan++) {
 			search(I, old_data, oldsize, new_data + scan, newsize - scan,
 			       0, oldsize, &pos, &len);
+
+			// If we find two matches in a row at the same position
+			// in the old file, and the match length is one less,
+			// it's possible for this condition to recur for the
+			// next search(). When the match length is large, the
+			// performance impact may be large (see regression test
+			// #14). Short circuit for this case when the match
+			// length is above a certain threshold.
+			// FIXME: set threshold after testing more.
+			if (len > 500 && pos == prevpos && len == prevlen - 1) {
+				break;
+			}
 
 			for (; scsc < scan + len; scsc++) {
 				if ((scsc + lastoffset < oldsize) &&
@@ -635,6 +650,9 @@ int make_bsdiff_delta(char *old_filename, char *new_filename, char *delta_filena
 			    (old_data[scan + lastoffset] == new_data[scan])) {
 				oldscore--;
 			}
+
+			prevpos = pos;
+			prevlen = len;
 		}
 
 		if ((len != oldscore) || (scan == newsize)) {
